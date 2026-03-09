@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>スクール・サバイバル・デラックス</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; font-family: 'Hiragino Kaku Gothic ProN', sans-serif; }
+        canvas { display: block; margin: auto; }
+        .overlay {
+            position: absolute; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); color: white;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 10;
+        }
+        h1 { font-size: 50px; color: #ff5555; margin-bottom: 20px; text-shadow: 2px 2px 0 #000; }
+        .btn {
+            padding: 12px 30px; font-size: 18px; cursor: pointer; margin: 10px;
+            background: #444; color: white; border: 2px solid #fff; border-radius: 8px;
+            transition: 0.2s;
+        }
+        .btn:hover { background: #00cc00; transform: scale(1.05); }
+        .btn.active { background: #008800; border-color: #00ff00; }
+        .settings { margin-bottom: 20px; background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; text-align: center;}
+        #ui { 
+            position: absolute; top: 20px; left: 20px; color: #fff; 
+            font-size: 18px; background: rgba(0,0,0,0.6); padding: 15px; border-radius: 8px; pointer-events: none; 
+        }
+        #pause-hint { position: absolute; top: 20px; right: 20px; color: #aaa; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div id="main-menu" class="overlay">
+        <h1>キウイの暴走</h1>
+        <div class="settings">
+            <button id="role-oni" class="btn active" onclick="setRole('oni')">キウイ（捕まえる）</button>
+            <button id="role-nigeyaku" class="btn" onclick="setRole('nigeyaku')">生徒（逃げる）</button>
+            <br><br>
+            <label>制限時間：</label>
+            <select id="time-limit" style="padding:8px; font-size:16px;">
+                <option value="30">30秒</option>
+                <option value="60" selected>60秒</option>
+                <option value="120">120秒</option>
+            </select>
+        </div>
+        <div class="stage-select">
+            <button class="btn" onclick="initGame('classroom')">教室</button>
+            <button class="btn" onclick="initGame('gym')">体育館</button>
+            <button class="btn" onclick="initGame('music')">音楽室</button>
+            <button class="btn" onclick="initGame('ground')">運動場</button>
+        </div>
+    </div>
+
+    <div id="pause-menu" class="overlay" style="display:none;">
+        <h1>PAUSE</h1>
+        <button class="btn" onclick="togglePause()">再開 (Q)</button>
+        <button class="btn" onclick="backToMenu()">タイトルに戻る</button>
+    </div>
+
+    <div id="ui">
+        モード: <span id="current-mode">-</span><br>
+        ステージ: <span id="current-stage">-</span><br>
+        残り時間: <span id="timer">--</span>秒<br>
+        <span id="score-label">被害者</span>: <span id="score">0</span> / 33
+    </div>
+    <div id="pause-hint">一時停止（Q）</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const timerElement = document.getElementById('timer');
+        const stageNameElement = document.getElementById('current-stage');
+        const modeNameElement = document.getElementById('current-mode');
+        const scoreLabel = document.getElementById('score-label');
+        const mainMenu = document.getElementById('main-menu');
+        const pauseMenu = document.getElementById('pause-menu');
+        const timeLimitSelect = document.getElementById('time-limit');
+
+        const bgm = new Audio('https://ia800905.us.archive.org/19/items/tv_tunes_762/Mission_Impossible.mp3');
+        bgm.loop = true;
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let gameRunning = false;
+        let isPaused = false;
+        let playerRole = 'oni'; 
+        let score = 0;
+        let timeLeft = 0;
+        let lastTime = 0;
+        const keys = {};
+        const obstacles = [];
+        const enemies = [];
+        const player = { x: 50, y: 50, size: 20, color: '#00cc00', speed: 7, name: "あなた" };
+        const aiOni = { x: 0, y: 0, size: 25, color: '#00cc00', speed: 5 };
+
+        function setRole(role) {
+            playerRole = role;
+            document.getElementById('role-oni').className = role === 'oni' ? 'btn active' : 'btn';
+            document.getElementById('role-nigeyaku').className = role === 'nigeyaku' ? 'btn active' : 'btn';
+        }
+
+        function initGame(stageType) {
+            score = 0; scoreElement.innerText = score;
+            timeLeft = parseInt(timeLimitSelect.value);
+            obstacles.length = 0; enemies.length = 0;
+            modeNameElement.innerText = playerRole === 'oni' ? "キウイ" : "逃走";
+            scoreLabel.innerText = playerRole === 'oni' ? "捕まえた数" : "残った生徒";
+            player.color = playerRole === 'oni' ? '#00cc00' : '#ff5555';
+            player.x = 50; player.y = 150; // 開始位置を少し下に
+
+            if (stageType === 'classroom') {
+                stageNameElement.innerText = "教室"; canvas.style.background = "#f4a460";
+                // 黒板 (前方中央)
+                obstacles.push({ x: canvas.width/2 - 250, y: 10, w: 500, h: 20, color: '#2f4f4f', type: 'blackboard' });
+                // テレビ (黒板の右)
+                obstacles.push({ x: canvas.width/2 + 280, y: 10, w: 80, h: 60, color: '#333', type: 'tv' });
+                // 6×6の机配置
+                const deskW = 60; const deskH = 40;
+                for (let i = 0; i < 6; i++) {
+                    for (let j = 0; j < 6; j++) {
+                        obstacles.push({ x: 150 + j * 150, y: 180 + i * 100, w: deskW, h: deskH, color: '#deb887' });
+                    }
+                }
+            } else if (stageType === 'gym') {
+                stageNameElement.innerText = "体育館"; canvas.style.background = "#ffd3a3";
+                for (let i = 0; i < 5; i++) obstacles.push({ x: 200 + i * 250, y: canvas.height / 2 - 50, w: 100, h: 150, color: '#cd853f' });
+            } else if (stageType === 'music') {
+                stageNameElement.innerText = "音楽室"; canvas.style.background = "#443333";
+                obstacles.push({ x: 100, y: 100, w: 120, h: 100, color: '#000' });
+                obstacles.push({ x: 400, y: 150, w: 80, h: 80, color: '#999' });
+            } else if (stageType === 'ground') {
+                stageNameElement.innerText = "運動場"; canvas.style.background = "#edc9af";
+                for (let i = 0; i < 40; i++) obstacles.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, w: 30, h: 30, color: '#888' });
+            }
+
+            if (playerRole === 'nigeyaku') { aiOni.x = canvas.width - 100; aiOni.y = canvas.height - 100; }
+
+            for (let i = 0; i < 33; i++) {
+                let ex, ey, col;
+                do {
+                    ex = Math.random() * (canvas.width - 50); ey = Math.random() * (canvas.height - 50);
+                    col = isColliding(ex, ey, 15);
+                } while (col || (Math.abs(ex - player.x) < 200 && Math.abs(ey - player.y) < 200));
+                enemies.push({ x: ex, y: ey, size: 12, color: '#ff5555', speed: 3 + Math.random() * 2 });
+            }
+
+            mainMenu.style.display = 'none'; gameRunning = true; isPaused = false;
+            bgm.play(); lastTime = Date.now(); requestAnimationFrame(gameLoop);
+        }
+
+        function isColliding(x, y, size) {
+            if (x < 0 || x > canvas.width - size || y < 0 || y > canvas.height - size) return true;
+            for (let ob of obstacles) {
+                if (x < ob.x + ob.w && x + size > ob.x && y < ob.y + ob.h && y + size > ob.y) return true;
+            }
+            return false;
+        }
+
+        function togglePause() {
+            if (!gameRunning) return;
+            isPaused = !isPaused;
+            pauseMenu.style.display = isPaused ? 'flex' : 'none';
+            if (!isPaused) { lastTime = Date.now(); requestAnimationFrame(gameLoop); }
+        }
+
+        function backToMenu() {
+            gameRunning = false; isPaused = false;
+            pauseMenu.style.display = 'none'; mainMenu.style.display = 'flex';
+            bgm.pause(); bgm.currentTime = 0;
+        }
+
+        window.addEventListener('keydown', e => {
+            keys[e.key] = true;
+            if (e.key === 'q' || e.key === 'Q') togglePause();
+        });
+        window.addEventListener('keyup', e => keys[e.key] = false);
+
+        function update() {
+            if (isPaused) return;
+            let now = Date.now();
+            timeLeft -= (now - lastTime) / 1000;
+            timerElement.innerText = Math.max(0, Math.ceil(timeLeft));
+            lastTime = now;
+
+            if (timeLeft <= 0) {
+                gameRunning = false;
+                alert(playerRole === 'oni' ? "タイムアップ！" : "逃げ切り成功！");
+                backToMenu(); return;
+            }
+
+            let nX = player.x, nY = player.y;
+            if (keys['ArrowUp'] || keys['w']) nY -= player.speed;
+            if (keys['ArrowDown'] || keys['s']) nY += player.speed;
+            if (keys['ArrowLeft'] || keys['a']) nX -= player.speed;
+            if (keys['ArrowRight'] || keys['d']) nX += player.speed;
+            if (!isColliding(nX, player.y, player.size)) player.x = nX;
+            if (!isColliding(player.x, nY, player.size)) player.y = nY;
+
+            if (playerRole === 'oni') {
+                enemies.forEach((e, i) => {
+                    const dx = e.x - player.x, dy = e.y - player.y, dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 250) {
+                        let mX = (dx/dist)*e.speed, mY = (dy/dist)*e.speed;
+                        if (!isColliding(e.x+mX, e.y, e.size)) e.x += mX;
+                        if (!isColliding(e.x, e.y+mY, e.size)) e.y += mY;
+                    }
+                    if (dist < player.size + e.size) { enemies.splice(i, 1); score++; }
+                });
+                scoreElement.innerText = score;
+                if (score >= 33) { alert("全員捕まえた！"); backToMenu(); }
+            } else {
+                let targets = [...enemies, player];
+                let closest = null, minDist = 9999;
+                targets.forEach(t => {
+                    let d = Math.sqrt((t.x-aiOni.x)**2 + (t.y-aiOni.y)**2);
+                    if (d < minDist) { minDist = d; closest = t; }
+                });
+                if (closest) {
+                    let dx = closest.x - aiOni.x, dy = closest.y - aiOni.y;
+                    let mX = (dx/minDist)*aiOni.speed, mY = (dy/minDist)*aiOni.speed;
+                    if (!isColliding(aiOni.x+mX, aiOni.y, aiOni.size)) aiOni.x += mX;
+                    if (!isColliding(aiOni.x, aiOni.y+mY, aiOni.size)) aiOni.y += mY;
+                }
+                if (Math.sqrt((player.x-aiOni.x)**2 + (player.y-aiOni.y)**2) < player.size + aiOni.size) {
+                    alert("鬼に捕まった！"); backToMenu();
+                }
+                enemies.forEach((e, i) => {
+                    if (Math.sqrt((e.x-aiOni.x)**2 + (e.y-aiOni.y)**2) < e.size + aiOni.size) enemies.splice(i, 1);
+                });
+                scoreElement.innerText = enemies.length + 1;
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            obstacles.forEach(ob => {
+                ctx.fillStyle = ob.color;
+                ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+                // 黒板にチョークの粉っぽさを追加
+                if(ob.type === 'blackboard') {
+                    ctx.strokeStyle = "#fff"; ctx.strokeRect(ob.x, ob.y, ob.w, ob.h);
+                }
+                // テレビの画面っぽさを追加
+                if(ob.type === 'tv') {
+                    ctx.fillStyle = "#111"; ctx.fillRect(ob.x+5, ob.y+5, ob.w-10, ob.h-10);
+                }
+            });
+            enemies.forEach(e => { ctx.fillStyle = e.color; ctx.beginPath(); ctx.arc(e.x, e.y, e.size, 0, Math.PI * 2); ctx.fill(); });
+            ctx.fillStyle = player.color; ctx.fillRect(player.x, player.y, player.size, player.size);
+            ctx.fillStyle = "white"; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "center";
+            ctx.fillText(player.name, player.x + player.size/2, player.y - 10);
+            if (playerRole === 'nigeyaku') {
+                ctx.fillStyle = aiOni.color; ctx.fillRect(aiOni.x, aiOni.y, aiOni.size, aiOni.size);
+                ctx.fillText("キウイ", aiOni.x + aiOni.size/2, aiOni.y - 10);
+            }
+        }
+
+        function gameLoop() {
+            if (!gameRunning || isPaused) return;
+            update(); draw(); requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>
